@@ -1,0 +1,211 @@
+function prep_master_flat(varargin)
+%
+
+
+
+
+
+
+
+InPar = inputParser;
+addOptional(InPar,'Date',[]);
+addOptional(InPar,'FlatType',{'Flat','SkyFlat','DomeFlat'});
+addOptional(InPar,'Config_node','config.node_1.txt');
+addOptional(InPar,'Config_camera','config.camera_1_1_1.txt');
+addOptional(InPar,'Config_proc','config.proc_1.txt');
+addOptional(InPar,'Config_isflat','config.proc-isflat_1.txt');
+addOptional(InPar,'Config_flat1','config.proc-flat1_1.txt');
+addOptional(InPar,'KeyExpTime','EXPTIME');
+addOptional(InPar,'KeyTempDet','TEMP_DET');
+addOptional(InPar,'KeyFilter','FILTER');
+addOptional(InPar,'TempEdges',(-20:5:15)); % group temperature bins
+addOptional(InPar,'MinNumberImages',5); % group temperature bins
+addOptional(InPar,'SaveProd',{'Im','Var','PixFlag'});
+addOptional(InPar,'SaveSub',true); % if provided, override configuration file
+addOptional(InPar,'SubCCDSEC',[]); % if provided, override configuration file
+addOptional(InPar,'SubUnCCDSEC',[]); % if provided, override configuration file
+addOptional(InPar,'NewNoOverlap',[]); % if provided, override configuration file
+parse(InPar,varargin{:});
+InPar = InPar.Results;
+
+InPar.Date = celestial.time.julday([15 9 2020]);
+InPar.Date = celestial.time.julday([16 9 2020]);
+
+Config.Node        = lastpipe.util.read_config_file(InPar.Config_node);
+Config.Camera      = lastpipe.util.read_config_file(InPar.Config_camera);
+Config.Proc        = lastpipe.util.read_config_file(InPar.Config_proc);
+Config.Proc.isflat = lastpipe.util.read_config_file(InPar.Config_isflat);
+Config.Proc.flat1  = lastpipe.util.read_config_file(InPar.Config_flat1);
+
+
+if InPar.SaveSub
+    if isempty(InPar.SubCCDSEC) || isempty(InPar.SubUnCCDSEC) || isempty(InPar.NewNoOverlap)
+
+        [InPar.SubCCDSEC,InPar.SubUnCCDSEC,Center,Nxy,InPar.NewNoOverlap]=imUtil.image.subimage_grid(Config.Proc.CCDSEC([2 4]),...
+                                            'SubSizeXY',Config.Proc.SubSizeXY,...
+                                            'OverlapXY',Config.Proc.OverlapXY);
+    end
+else
+    % don't save sub images
+    InPar.SubCCDSEC   = [];
+    InPar.SubUnCCDSEC = [];
+end
+
+
+PWD = pwd;
+
+
+% read master dark image
+% a place holder for exposure time... ???
+
+
+% read all dark images available in directory
+PathRaw=imUtil.util.file.construct_path('Date',InPar.Date,'TimeZone',Config.Node.TimeZone,'Level','raw',...
+                                     'DataDir',Config.Camera.DataDir,...
+                                     'Base',Config.Camera.BaseDir);
+                        
+
+cd(PathRaw);
+
+if ~iscell(InPar.FlatType)
+    InPar.FlatType = {InPar.FlatType};
+end
+Nflattype = numel(InPar.FlatType);
+List = [];
+for Iflattype=1:1:Nflattype
+    FileName = sprintf('%s*_%s*.%s',Config.Node.ProjName, InPar.FlatType{Iflattype},  Config.Proc.ImageFileType);
+    List     = [List, imUtil.util.filelist(FileName)];
+end
+
+% read potential flat images
+IC = imCl.fits2imCl(List);
+
+% trim images (remove overscan)
+IC = trim(IC,Config.Proc.CCDSEC,'ccdsec');
+            
+
+
+% select flat images
+KeyVal = imUtil.util.struct2keyval(Config.Proc.isflat);
+[IsFlat,Res] = isflat(IC,KeyVal{:});
+
+IC = IC(IsFlat);
+
+% Read master dark image
+DarkList = lastpipe.db.latest_calib_image('DataBaseName','table','Type','dark','NeededJD',Date,...
+                                            'Config_camera',InPar.Config_camera,...
+                                            'ExpTime',
+                                        
+
+addOptional(InPar,'DataBaseName','table');
+addOptional(InPar,'Config_camera','config.camera_1_1_1.txt');
+addOptional(InPar,'NeededJD',celestial.time.julday);
+addOptional(InPar,'ExpTime',15);
+addOptional(InPar,'DetTempRange',[]);
+addOptional(InPar,'MinNUM_COMB',5);
+addOptional(InPar,'Field','0');  % or 'sub'
+addOptional(InPar,'Type','dark');
+addOptional(InPar,'Level','proc');
+addOptional(InPar,'SubLevel','n');
+addOptional(InPar,'Product',{'im','var','pixflag'});
+
+
+
+% create master dark image:
+FlagIm      = strcmp({DarkList.Product},'im');
+FlagVar     = strcmp({DarkList.Product},'var');
+FlagPixFlag = strcmp({DarkList.Product},'pixflag');
+
+Dark = imCl.fits2imCl(DarkList(FlagIm).FullName,1);
+Dark = imCl.fits2imCl(DarkList(FlagVar).FullName,1,'Add2imCl',Dark,'Field','Var','ReadHead',false);
+Dark = imCl.fits2imCl(DarkList(FlagPixFlag).FullName,1,'Add2imCl',Dark,'Field','PixFlag','ReadHead',false,'Convert2Class',@uint32);
+
+% subtract dark
+[IC,Bias,Res]=debias(IC,'Bias',Dark);
+
+
+% no need to treat filters in this stage
+
+% ignore detector temperature at this stage
+
+% consider adding a step to reject stars
+
+% prep flat
+KeyVal = imUtil.util.struct2keyval(Config.Proc.flat1);
+[Flat,Res]=flat1(IC,KeyVal{:});
+
+% delete the Nim content in the dark image 
+% just to save memory
+Flat.Nim = [];
+
+% measure global statistics
+FlatSum         = Flat.PixFlag.summary;
+
+Stat.NbitNot0   = FlatSum{1}.NpixNot0;
+
+Stat.medianIm   = median(Flat.Im(:));
+Stat.medVar     = median(Flat.Var(:));
+Stat.medStd     = median(sqrt(Flat.Var(:)));
+
+IndFlatKeys = find(~Util.cell.isempty_cell(regexp(FlatSum{1}.KeyName,'Flat','match')));
+KeyNames  = FlatSum{1}.KeyName(IndFlatKeys);
+Nkey      = numel(KeyNames);
+for Ikey=1:1:Nkey
+    ModifiedKey = regexprep(KeyNames{Ikey},'Flat_','F');
+    Stat.(ModifiedKey) = FlatSum{1}.BitCount(IndFlatKeys(Ikey));
+end
+
+% add statistics to header
+Flat.Header=addKey(Flat.Header,Stat);       
+
+
+
+% store the full Dark images, including catalog
+AllNamesF=lastpipe.util.save_product(Flat,...
+                'Config_camera',Config.Camera,...
+                'Date',MidJD,...
+                'Fields',InPar.SaveProd,...
+                'Type','flat','Level','proc','SubLevel','n',...
+                'FieldID','0',...
+                'ProjName',Config.Node.ProjName,...
+                'TimeZone',Config.Node.TimeZone,...
+                'Filter',Filter,...
+                'DataDir',Config.Camera.DataDir,...
+                'BaseDir',Config.Camera.BaseDir,...
+                'HDU',1,...
+                'DataType',Config.Proc.DataType,...
+                'CatDataType',Config.Proc.CatDataType,...
+                'CatDataset',Config.Proc.CatalogFileDataset,...
+                'SubCCDSEC',[],...
+                'NewNoOverlap',[]);
+
+% Store a sub-images version of the dark images
+if ~isempty(InPar.SubCCDSEC) && ~isempty(InPar.NewNoOverlap)
+    AllNamesS=lastpipe.util.save_product(Dark,...
+                    'Config_camera',Config.Camera,...
+                    'Date',MidJD,...
+                    'Fields',InPar.SaveProd,...
+                    'Type','flat','Level','proc','SubLevel','n',...
+                    'FieldID','0',...
+                    'ProjName',Config.Node.ProjName,...
+                    'TimeZone',Config.Node.TimeZone,...
+                    'Filter',Filter,...
+                    'DataDir',Config.Camera.DataDir,...
+                    'BaseDir',Config.Camera.BaseDir,...
+                    'HDU',1,...
+                    'DataType',Config.Proc.DataType,...
+                    'CatDataType',Config.Proc.CatDataType,...
+                    'CatDataset',Config.Proc.CatalogFileDataset,...
+                    'SubCCDSEC',InPar.SubCCDSEC,...
+                    'NewNoOverlap',InPar.NewNoOverlap);
+end
+
+
+
+cd(PWD);
+
+
+
+
+
+

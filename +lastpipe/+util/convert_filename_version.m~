@@ -1,0 +1,21 @@
+function convert_filename_version(FileName,Vold,Vnew)
+% Modify file name version from Vold to Vnew
+% Package: +lastpipe.util
+% Input  : - File name
+%          - version
+%          - new version 
+% Example: lastpipe.util.convert_filename_version('LAST*.fits','002','001');
+
+Files = dir(FileName);
+List  = {Files.name};
+
+Prop = imUtil.util.file.filename2prop(List);
+for I=1:1:numel(List)
+    
+    if strcmp(Prop(I).Version,Vold)
+        NewName = regexprep(List{I},sprintf('%s.%s',Vold,Prop(I).FileType),sprintf('%s.%s',Vnew,Prop(I).FileType));
+        mov(List{I},NewName);
+    end
+end
+        
+        

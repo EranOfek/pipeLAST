@@ -1,0 +1,41 @@
+function [NewRA,NewDec]=subimage_coo(RA,Dec,X,Y,CCDSEC, Scale, Flip,Rotation)
+% given RA/Dec at X/Y convert to RA/Dec at CCDSEC center
+% Package: +lastpipe.util
+% Input  : - RA [deg]
+%          - Dec [deg]
+%          - X position corresponding to RA,Dec
+%          - Y position corresponding to RA,Dec
+%          - CCDSEC [Xmin Xmax Ymin Ymax] of a sub image.
+%            Alternatively [X,Y] position in which to calculate the new
+%            RA,Dec.
+%          - Pixel scale ["/pix].
+%          - Flip. Default is [1 1].
+%          - Rotation (position angle) [deg] of the Y axis. Default is 0.
+% Output : - RA at the center of the CCDSEC.
+%          - Dec at the center of the CCDSEC.
+% Example: lastpipe.util.subimage_coo(RA,Dec,X,Y,CCDSEC, Flip,Rotation)
+%          lastpipe.util.subimage_coo(10,30,100,100,[200 200], [1 1],[0])
+
+if nargin<8
+    Rotation = 0;
+    if nargin<7
+        Flip = [1 1];
+    end
+end
+
+if numel(CCDSEC)==4
+    Xnew = (CCDSEC(1)+CCDSEC(2)).*0.5;
+    Ynew = (CCDSEC(3)+CCDSEC(4)).*0.5;
+elseif numel(CCDSEC)==2
+    Xnew = CCDSEC(1);
+    Ynew = CCDSEC(2);
+else
+    error('Unknown CCDSEC format');
+end
+    
+DX = Xnew - X;
+DY = Ynew - Y;
+
+atan2d(DY,DX)
+
+

@@ -1,0 +1,154 @@
+function AllNames=save_product(IC,varargin)
+% save LAST product in FITS/hdf5 files
+% Package: +last.pipe
+% Description: Save LAST image/catalog data product. Images will be saved
+%              in FITS format and catalogs in HDF5 format.
+% Input  : - A single element imCl object
+%          * Pairs of ...,key,val,... arguments. Following
+%            keywords are available:
+%            'Config_camera' - Camera configuration file, or a structure
+%                   containing the camera configuration structure.
+%                   Default is 'config.camera_1_1_1.txt'.
+%            'Date' - A JD or a string containing the date in ISO format.
+%                   This date will be part of the image name.
+%                   Default is ''.
+%            'Type' - Image type. Default is 'dark'.
+%            'Level' - Product level. Default is 'proc'.
+%            'SubLevel' - Product sub level. Default is 'n'.
+%            'FieldID' - Field ID. Default is ''.
+%            'ProjName' - Project name. Default is 'LAST'.
+%            'TimeZone' - Time zone. Default is 2.
+%            'Filter'
+%            'DataDir' - Default is ''.
+%            'BaseDir' - Default is ''.
+%            'Fields' - A cell array of fields in te imCl object to save.
+%                   Default is {'Im','Var','Mask'}.
+%            'HDU' - Default is 1.
+%            'DataType' - Default is 'single'.
+%            'CatDataType' - Default is 'single'.
+%            'CatDataet' - Default is '/Cat'.
+% Output : - A structure array of size (Nsec,Nfields) containing the
+%            file names and path for each file.
+
+
+
+InPar = inputParser;
+addOptional(InPar,'Config_camera','config.camera_1_1_1.txt');
+addOptional(InPar,'Date','');
+addOptional(InPar,'Type','dark');
+addOptional(InPar,'Level','proc');
+addOptional(InPar,'SubLevel','n');
+addOptional(InPar,'FieldID','');
+addOptional(InPar,'ProjName','LAST');
+addOptional(InPar,'TimeZone',2);
+addOptional(InPar,'Filter','');
+addOptional(InPar,'DataDir','');
+addOptional(InPar,'BaseDir','');
+addOptional(InPar,'Fields',{'Im','Var','PixFlag'});  % fields to save
+addOptional(InPar,'HDU',[1]);
+addOptional(InPar,'DataType','single');
+addOptional(InPar,'CatDataType','single');
+addOptional(InPar,'CatDataset','/Cat');
+addOptional(InPar,'SubCCDSEC',[]);  % if provided, then save sub images
+addOptional(InPar,'NewNoOverlap',[]);  % if provided, then save sub images
+addOptional(InPar,'Version',1);
+            
+parse(InPar,varargin{:});
+InPar = InPar.Results;
+
+if numel(IC)>1
+    error('save_product works on one imCl element only');
+end
+
+if isstruct(InPar.Config_camera)
+    % already instruct
+    Config.Camera      = InPar.Config_camera;
+else
+    Config.Camera      = lastpipe.util.read_config_file(InPar.Config_camera);
+end
+
+
+if isnumeric(InPar.Date)
+    InPar.Date = convert.time(InPar.Date,'JD','StrDate');
+end
+
+
+if isempty(InPar.SubCCDSEC)
+    InPar.SubCCDSEC = ccdsec(IC);
+else
+    % break image
+    IC = trim(IC,InPar.SubCCDSEC,'ccdsec','NOCCDSEC',InPar.NewNoOverlap);
+end
+
+if ~isempty(InPar.NewNoOverlap)
+    IC = flag_edge(IC,'CCDSEC',InPar.NewNoOverlap,'FlagName','Overlap');
+end
+
+Nsec = size(InPar.SubCCDSEC,1);
+
+Nfields = numel(InPar.Fields);
+
+PWD = pwd;
+
+for Isec=1:1:Nsec
+    
+    for Ifields=1:1:Nfields
+        % file name and path
+        if Nsec==1
+            FieldID = sprintf('%s',InPar.FieldID);
+        else
+            FieldID = sprintf('%s.%02d',InPar.FieldID,Isec);
+        end
+        [FileName,Path]=imUtil.util.file.construct_filename('ProjName',InPar.ProjName,...
+                                                            'Date',InPar.Date,...
+                                                            'TimeZone',InPar.TimeZone,...
+                                                            'Filter',InPar.Filter,...
+                                                            'FieldID',FieldID,...
+                                                            'Type',InPar.Type,...
+                                                            'Level',InPar.Level,...
+                                                            'SubLevel',InPar.SubLevel,...
+                                                            'Product',lower(InPar.Fields{Ifields}),...
+                                                            'Version',InPar.Version,...
+                                                            'FileType','fits',...
+                                                            'DataDir',InPar.DataDir,...
+                                                            'Base',InPar.BaseDir);
+
+        % make sure directory exist
+        lastpipe.util.cdmkdir(Path);
+        
+        FullFileName = sprintf('%s%s',Path,FileName);                                               
+        % save imCl object in FITS/HDF5 file
+        switch lower(InPar.Fields{Ifields})
+            case {'im','var','back'}
+                imCl2fits(IC(Isec),'DataType',InPar.DataType,'HDU',InPar.HDU,'FieldName',InPar.Fields(Ifields),'FileName',FullFileName);
+            case {'psf'}
+
+            case {'imflag','pixflag'}
+                DataType = class(IC(Isec).(InPar.Fields{Ifields}).Mask);
+                imCl2fits(IC(Isec),'DataType',DataType,'HDU',InPar.HDU,'FieldName',InPar.Fields(Ifields),'FileName',FullFileName);
+
+            case {'cat'}
+                catCl2hdf5(IC(Isec).Cat,FullFileName,InPar.CatDataset,'Datatype',InPar.CatDataType);
+            otherwise
+                error('save_product does not support saving %s field name',InPar.Fields{Ifields});
+        end
+        
+        AllNames(Isec,Ifields).FileName = FileName;
+        AllNames(Isec,Ifields).Path     = Path;
+        
+    end
+end
+
+% update catalog
+% this part is missing
+
+switch lower(InPar.Type)
+    case 'dark'
+        lastpipe.db.insert_image('dark.table',IC(1),{AllNames.Path},{AllNames.FileName},'Config_camera',Config.Camera)
+    case 'flat'
+        lastpipe.db.insert_image('flat.table',IC(1),{AllNames.Path},{AllNames.FileName},'Config_camera',Config.Camera)
+    otherwise
+        error('Not supported Type option');
+end
+            
+cd(PWD);               
